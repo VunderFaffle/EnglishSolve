@@ -22,6 +22,9 @@ WAIT_TIMEOUT = 15
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"  # Стандартный URL LM Studio
 LM_STUDIO_MODEL = "google/gemma-3-4b"  # Можно изменить на нужную модель
 
+# Глобальная переменная дебага, так удобнее
+DEBUG = False
+
 # SYSTEM_PROMPT = """Ты — помощник для прохождения тестов. 
 # Твоя задача отвечать максимально кратко и по делу на вопросы теста.
 # Отвечай ТОЛЬКО ответом на вопрос, без пояснений и дополнительного текста, указывать номер ответа на вопрос или номер вопроса НЕЛЬЗЯ.
@@ -34,7 +37,7 @@ LM_STUDIO_MODEL = "google/gemma-3-4b"  # Можно изменить на нуж
 # - Для текстового ответа: краткий ответ без лишних слов
 # - Для множественного выбора: номера через запятую (например: "1, 3, 4")"""
 
-
+# Доработанный системный промпт. С ним чуть лучше работает но возможно потом ещё лучше будет
 SYSTEM_PROMPT = """
 Ты решаешь тесты по английскому языку. Работай строго по алгоритму:
 
@@ -252,6 +255,7 @@ def has_audio_player(driver):
 # ==================== РЕШЕНИЕ ТЕСТА ====================
 def solve_quiz(driver, quiz_url, quiz_name):
     """Автоматическое решение теста"""
+    global DEBUG
     #Обрезаем название чтобы убрать номера в конце и в начале, чтобы не смущать ИИшку лишними символами
     quiz_name = quiz_name[3:-1] if quiz_name[-1].isdigit() else quiz_name[3:]
     print(f"\n🎯 Начинаем решение теста...")
@@ -349,9 +353,11 @@ def solve_quiz(driver, quiz_url, quiz_name):
                 QUESTION:
                 {question_text}
                 OPTIONS:
-                {chr(10).join(answer_options) if answer_options else "No answer options in this question"}
+                {chr(10).join(answer_options) if answer_options else "No answer options in this question, you need to come up with an answer yourself."}
                 ANSWER:
                 """
+                if DEBUG:
+                    print(prompt)
                 # Отправка запроса в LM Studio
                 ai_answer = query_lm_studio(prompt, images_base64 if images_base64 else None)
                 
@@ -442,8 +448,9 @@ def solve_quiz(driver, quiz_url, quiz_name):
         return False
 
 # ==================== АНАЛИЗ РАЗДЕЛА ====================
-def analyze_section(driver, section_number, auto_solve=False, DEBUG=False):
+def analyze_section(driver, section_number, auto_solve=False):
     """Анализ раздела с опцией автоматического решения"""
+    global DEBUG
     print(f"\n📚 Анализ раздела {section_number}...")
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
     
@@ -535,10 +542,14 @@ def analyze_section(driver, section_number, auto_solve=False, DEBUG=False):
                 print(f"\n{'='*70}")
                 print(f"⏭️ Попытка решить: {quiz['name']}")
                 print(f"{'='*70}")
+
+                # Говорит само за себя
                 if DEBUG:
                     print(quiz['url'])
                     print(quiz['name'])
                     input()
+
+                # Получаем результат решения
                 success = solve_quiz(driver, quiz['url'], quiz['name'])
                 
                 if success:
@@ -599,7 +610,8 @@ def load_credentails():
 
 # ==================== ОСНОВНАЯ ПРОГРАММА ====================
 def main():
-    DEBUG = False
+    global DEBUG
+
     driver = None
     if not os.path.isfile("credentails.txt"):
         initialize_credentails()
@@ -643,7 +655,7 @@ def main():
                     continue
                 
                 auto_solve = (mode == '2')
-                analyze_section(driver, section_num, auto_solve=auto_solve, DEBUG=DEBUG)
+                analyze_section(driver, section_num, auto_solve=auto_solve)
                 
             except ValueError:
                 print("❌ Пожалуйста, введите корректное число!")
