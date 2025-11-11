@@ -24,7 +24,7 @@ LM_STUDIO_MODEL = "google/gemma-3-4b"  # Можно изменить на нуж
 
 SYSTEM_PROMPT = """Ты — помощник для прохождения тестов. 
 Твоя задача отвечать максимально кратко и по делу на вопросы теста.
-Отвечай ТОЛЬКО ответом на вопрос, без пояснений и дополнительного текста.
+Отвечай ТОЛЬКО ответом на вопрос, без пояснений и дополнительного текста, указывать номер ответа на вопрос или номер вопроса НЕЛЬЗЯ.
 Если есть нумерация вариантов (1, 2, 3 и т.д.), указывай номер и ответ.
 Формат ответа:
 - Для выбора варианта: просто номер (например: "2")
@@ -227,7 +227,7 @@ def has_audio_player(driver):
     return False
 
 # ==================== РЕШЕНИЕ ТЕСТА ====================
-def solve_quiz(driver, quiz_url):
+def solve_quiz(driver, quiz_url, quiz_name):
     """Автоматическое решение теста"""
     print(f"\n🎯 Начинаем решение теста...")
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
@@ -288,10 +288,10 @@ def solve_quiz(driver, quiz_url):
                 question_text = ""
                 try:
                     qtext = question.find_element(By.CSS_SELECTOR, ".qtext")
-                    question_text = qtext.text.strip()
+                    question_text = quiz_name + qtext.text.strip()
                     print(f"❓ Вопрос: {question_text[:100]}...")
                 except NoSuchElementException:
-                    question_text = question.text.strip()
+                    question_text = quiz_name + question.text.strip()
                 
                 # Поиск изображений в вопросе
                 images_base64 = []
@@ -408,7 +408,7 @@ def solve_quiz(driver, quiz_url):
         return False
 
 # ==================== АНАЛИЗ РАЗДЕЛА ====================
-def analyze_section(driver, section_number, auto_solve=False):
+def analyze_section(driver, section_number, auto_solve=False, DEBUG=False):
     """Анализ раздела с опцией автоматического решения"""
     print(f"\n📚 Анализ раздела {section_number}...")
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
@@ -501,8 +501,11 @@ def analyze_section(driver, section_number, auto_solve=False):
                 print(f"\n{'='*70}")
                 print(f"⏭️ Попытка решить: {quiz['name']}")
                 print(f"{'='*70}")
-                
-                success = solve_quiz(driver, quiz['url'])
+                if DEBUG:
+                    print(quiz['url'])
+                    print(quiz['name'])
+                    input()
+                success = solve_quiz(driver, quiz['url'], quiz['name'])
                 
                 if success:
                     print(f"🎉 Тест '{quiz['name']}' успешно пройден!")
