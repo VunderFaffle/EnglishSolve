@@ -534,9 +534,38 @@ def analyze_section(driver, section_number, auto_solve=False):
         print(f"\n❌ Ошибка при анализе раздела: {e}")
         return None
 
+# =================== ПЕРВИЧНАЯ ИНИЦИАЛИЗАЦИЯ ===================
+def initialize_credentails():
+    """Инициализация файла с учётными данными"""
+    print("⚙️ Первый запуск, инициализация файла с учётными данными. Файлы хранятся локально.")
+    username = input("Введите ваш логин:")
+    password = input("Введите ваш пароль:")
+    with open("credentails.txt", "w", encoding="utf-8") as f:
+        f.write(f"{username}\n{password}\n")
+    print("✅ Файл с учётными данными создан.")
+
+
+# ==================== ЗАГРУЗКА УЧЁТНЫХ ДАННЫХ ====================
+def load_credentails():
+    """Загрузка учётных данных из файла"""
+    global LOGIN_USERNAME, LOGIN_PASSWORD
+    with open("credentails.txt", "r", encoding="utf-8") as f:
+        lines = f.readlines()
+        if len(lines) >= 2:
+            LOGIN_USERNAME = lines[0].strip()
+            LOGIN_PASSWORD = lines[1].strip()
+        else:
+            raise Exception("Файл с учётными данными повреждён или некорректен.")
+
+
+
+
 # ==================== ОСНОВНАЯ ПРОГРАММА ====================
 def main():
     driver = None
+    if not os.path.isfile("credentails.txt"):
+        initialize_credentails()
+    load_credentails()
     try:
         print("🚀 Запуск автоматического решателя Moodle тестов...")
         print("⚠️ Убедитесь, что LM Studio запущен на http://localhost:1234\n")
