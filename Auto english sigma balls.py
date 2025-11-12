@@ -39,22 +39,22 @@ DEBUG = False
 
 # Доработанный системный промпт. С ним чуть лучше работает но возможно потом ещё лучше будет
 SYSTEM_PROMPT = """
-Ты решаешь тесты по английскому языку. Работай строго по алгоритму:
+You are solving English tests. Follow the algorithm strictly:
 
-1) Если даны варианты ответа:
-- Определи, какой вариант правильный по смыслу.
-- Верни ТОЛЬКО номер варианта без слов и комментариев.
-- Никаких объяснений.
-- Если вариантов несколько (множественный выбор) — верни номера через запятую без пробелов, например: 1,3,4
+1) If multiple choice answers are given:
+- Determine which answer is correct in meaning.
+- Return ONLY the answer number, without words or comments.
+- No explanations.
+- If there are multiple choices (multiple choice), return the numbers separated by commas, without spaces, for example: 1, 3, 4
 
-2) Если требуется вписать слово или фразу:
-- Ответ только на английском.
-- Минимальная длина.
-- Без кавычек, без точки в конце.
+2) If a word or phrase is required:
+- Answer in English only.
+- Minimum length.
+- No quotation marks, no final period.
 
-3) Никогда не добавляй лишние фразы.
-4) Никогда не пересказывай вопрос.
-5) НЕЛЬЗЯ использовать другие языки кроме английского.
+3) Never add unnecessary phrases.
+4) Never retell the question.
+5) DO NOT use languages ​​other than English.
 """
 
 # ==================== НАСТРОЙКА БРАУЗЕРА ====================
@@ -353,7 +353,7 @@ def solve_quiz(driver, quiz_url, quiz_name):
                 QUESTION:
                 {question_text}
                 OPTIONS:
-                {chr(10).join(answer_options) if answer_options else "No answer options in this question, you need to come up with an answer yourself."}
+                {chr(10).join(answer_options) if answer_options else "No answer options in this question, you need to come up with an answer yourself and give it in a text format."}
                 ANSWER:
                 """
                 if DEBUG:
