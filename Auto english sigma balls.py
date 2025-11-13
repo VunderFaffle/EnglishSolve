@@ -91,6 +91,7 @@ def setup_driver():
 
 # ==================== LM STUDIO API ====================
 def query_lm_studio(question_text, images_base64=None):
+    global DEBUG
     """Отправка запроса в LM Studio API с поддержкой изображений"""
     try:
         # Формируем контент сообщения
@@ -104,6 +105,8 @@ def query_lm_studio(question_text, images_base64=None):
         
         # Добавляем изображения, если есть
         if images_base64:
+            if DEBUG:
+                print("добавляем картиночки")
             for img_b64 in images_base64:
                 content.append({
                     "type": "image_url",
@@ -111,6 +114,8 @@ def query_lm_studio(question_text, images_base64=None):
                         "url": f"data:image/png;base64,{img_b64}"
                     }
                 })
+        if DEBUG and not images_base64:
+            print("Картиночки не было переданы")
         
         payload = {
             "model": LM_STUDIO_MODEL,
