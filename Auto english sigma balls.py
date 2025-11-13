@@ -10,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.support.ui import Select
 
 # ==================== КОНФИГУРАЦИЯ ====================
 SITE_URL = "https://esdo.ssuwt.ru/login/index.php"
@@ -49,12 +50,13 @@ You are solving English tests. Follow the algorithm strictly:
 
 2) If a word or phrase is required:
 - Answer in English only.
-- Minimum length.
-- No quotation marks, no final period.
+- Minimum length needed to answer the question.
+- No quotation marks, no final period, no anwser number, just the answer.
 
 3) Never add unnecessary phrases.
 4) Never retell the question.
 5) DO NOT use languages ​​other than English.
+6) There might be a task to choose ONLY ONE option, in this case you must ONLY reply with ONLY ONE number correspoding to the number of the correct option, for example: 2
 """
 
 # ==================== НАСТРОЙКА БРАУЗЕРА ====================
@@ -89,6 +91,7 @@ def setup_driver():
 
 # ==================== LM STUDIO API ====================
 def query_lm_studio(question_text, images_base64=None):
+    global DEBUG
     """Отправка запроса в LM Studio API с поддержкой изображений"""
     try:
         # Формируем контент сообщения
@@ -102,6 +105,8 @@ def query_lm_studio(question_text, images_base64=None):
         
         # Добавляем изображения, если есть
         if images_base64:
+            if DEBUG:
+                print("добавляем картиночки")
             for img_b64 in images_base64:
                 content.append({
                     "type": "image_url",
@@ -109,6 +114,8 @@ def query_lm_studio(question_text, images_base64=None):
                         "url": f"data:image/png;base64,{img_b64}"
                     }
                 })
+        if DEBUG and not images_base64:
+            print("Картиночки не было переданы")
         
         payload = {
             "model": LM_STUDIO_MODEL,
@@ -252,6 +259,195 @@ def has_audio_player(driver):
     
     return False
 
+# ====================================== Доработанный ИИшкой хэндлинг селектов, вынес в отдельную функцию. ======================================
+# Вставь это прямо после формирования question_text и image скриншотов (и до любого общего query_lm_studio)
+def handle_selects_one_call(driver, question, question_text, images=None):
+    global DEBUG
+    if DEBUG:
+        print("Нашли дропдауны, решаем их, скипаем остальное")
+    """
+    Обрабатывает все <select> в вопросе одним запросом.
+    Возвращает True если обработано хотя бы один select (и в таком случае НЕ НУЖНО
+    вызывать основную логику AI для этого вопроса).
+    """
+    from selenium.webdriver.support.ui import Select
+    try:
+        selects = question.find_elements(By.TAG_NAME, "select")
+
+        selects_info = []
+        for sel in selects:
+            try:
+                sel_obj = Select(sel)
+                opts = [o.text.strip() for o in sel_obj.options if o.text.strip() and "Выберите" not in o.text and "Select" not in o.text]
+                if not opts:
+                    continue
+                selects_info.append({"element": sel, "options": opts})
+            except Exception:
+                continue
+
+        if not selects_info:
+            return False
+
+        # ---- ДЕДУПЛИКАЦИЯ НАБОРОВ ОПЦИЙ ----
+        # Чтобы не посылать одинаковые большие списки много раз — составим словарь уникальных наборов
+        unique_sets = []          # list of tuples of option texts
+        unique_map = {}           # map tuple(opts) -> index in unique_sets (1-based)
+        dropdown_refs = []        # для каждого select: (unique_index, length_of_set)
+
+        for sd in selects_info:
+            key = tuple(sd["options"])
+            if key in unique_map:
+                uid = unique_map[key]
+            else:
+                uid = len(unique_sets) + 1
+                unique_sets.append(key)
+                unique_map[key] = uid
+            dropdown_refs.append({"select": sd["element"], "unique_id": uid, "set_len": len(sd["options"])})
+
+        # ---- Привязка изображений (если есть) ----
+        # Попытка сопоставить картинки по порядку внутри question, но не обязательно
+        imgs = question.find_elements(By.TAG_NAME, "img")
+        images_for_api = []
+        img_for_dropdown = []  # список баз64 или None для каждого dropdown_refs по порядку
+        for i, dr in enumerate(dropdown_refs):
+            b64 = None
+            if imgs and i < len(imgs):
+                try:
+                    b64 = image_to_base64(driver, imgs[i])
+                except Exception:
+                    b64 = None
+            img_for_dropdown.append(b64)
+            if b64:
+                images_for_api.append(b64)
+
+        # ---- Формирование компактного prompt'а ----
+        # 1) Короткая шапка с вопросом (минимально)
+        header = f"QUESTION:\n{question_text}\n\n" if question_text else "QUESTION:\n\n"
+        header += "Choose the correct option number for each dropdown from the corresponding option sets. Return only numbers separated by commas (example: 1,2,6,9). Each number in your anwser must correspond to the dropdowns in the exact order they are given in. If there are multiple images attached, each one will correspond to the dropdowns in the order they are given are MUST be used to complete the task. No words, just numbers.\n\n"
+
+        # 2) Вставляем уникальные наборы опций раз и только раз
+        sets_blocks = []
+        for uid, key in enumerate(unique_sets, start=1):
+            lines = [f"{i}. {text}" for i, text in enumerate(key, start=1)]
+            sets_blocks.append(f"OptionsSet {uid}:\n" + "\n".join(lines))
+
+        # 3) Для каждого dropdown — кратко указываем, какой набор он использует и (если есть) что к нему приложено
+        refs_blocks = []
+        for idx, dr in enumerate(dropdown_refs, start=1):
+            img_note = f"Image {idx} attached." if img_for_dropdown[idx-1] else ""
+            refs_blocks.append(f"Dropdown {idx}: uses OptionsSet {dr['unique_id']}. {img_note}")
+
+        full_prompt = header + "\n\n".join(sets_blocks) + "\n\n" + "\n".join(refs_blocks) + "\n\nANSWER:"
+        if DEBUG:
+            print(full_prompt)
+        # ---- Один вызов LM Studio ----
+        # Используем строго детерминированные параметры: temperature 0
+        ai_answer = query_lm_studio(full_prompt, images_for_api if images_for_api else None)
+        
+
+        if not ai_answer:
+            print("⚠️ LM Studio вернула пустой ответ для dropdown'ов")
+            return False
+
+        # ---- Парсинг ответа: числа по запятым ----
+        nums = [int(x) for x in ai_answer.replace(';', ',').split(',') if x.strip().isdigit()]
+        # Если ответ содержит <count> чисел меньше, чем dropdown'ов — заполним 1
+        while len(nums) < len(dropdown_refs):
+            nums.append(1)
+
+        # ---- Применяем выборы ----
+        for i, dr in enumerate(dropdown_refs):
+            sel_el = dr["select"]
+            sel_obj = Select(sel_el)
+            chosen = nums[i] - 1
+            if 0 <= chosen < len(sel_obj.options):
+                sel_obj.select_by_index(chosen)
+                # помечаем, чтобы не обрабатывать второй раз
+                try:
+                    driver.execute_script("arguments[0].setAttribute('data-auto-selected','1')", sel_el)
+                except Exception:
+                    pass
+                # Отладочный лог
+                try:
+                    txt = sel_obj.options[chosen].text.strip()
+                except Exception:
+                    txt = ""
+                print(f"✅ Dropdown {i+1}: set #{nums[i]} -> '{txt}'")
+            else:
+                print(f"⚠️ Dropdown {i+1}: получен неверный индекс {nums[i]} (диапазон 1..{len(sel_obj.options)})")
+
+        return True
+
+    except Exception as e:
+        print(f"⚠️ Ошибка в handle_selects_one_call: {e}")
+        return False
+    
+# def handle_selects_one_call(question, question_text):
+    # global DEBUG
+    # # === Dropdown (корректная обработка нескольких select'ов за один запрос) ===
+    # try:
+    #     selects = question.find_elements(By.TAG_NAME, "select")
+    #     if selects:
+    #         dropdowns_data = []
+
+    #         # Собираем варианты для каждого dropdown
+    #         if DEBUG:
+    #             print("Начинаю собирать варианты с каждого дропбокса")
+    #         for i, select in enumerate(selects, 1):
+    #             dropdown = Select(select)
+    #             options = dropdown.options
+    #             opts_text = {}
+    #             for j, opt in enumerate(options, 1):
+    #                 text = opt.text.strip()
+    #                 if text and "Выберите" not in text and "Select" not in text:
+    #                     # Номер выбора:
+    #                     if text not in opts_text.values():
+    #                         opts_text[j] = text
+    #             if opts_text:
+    #                 dropdowns_data.append((select, opts_text))
+
+    #         if dropdowns_data:
+    #             # Формируем единый prompt
+    #             dropdown_prompt = []
+    #             for i, (_,opts_text) in enumerate(dropdowns_data, 1):
+    #                 opts_list = "\n".join(opts_text)
+    #                 dropdown_prompt.append(f"Dropdown {i} options:\n{opts_list}\n")
+
+    #             full_prompt = (
+    #                 f"QUESTION:\n{question_text}\n\n"
+    #                 "Each dropdown has its own set of options.\n"
+    #                 "For each dropdown, choose the correct option number.\n"
+    #                 "Return all numbers separated by commas (example: 1,3,2,...)\n\n"
+    #                 + "\n".join(dropdown_prompt)
+    #                 + "\nANSWER:"
+    #             )
+
+    #             ai_answer = query_lm_studio(full_prompt)
+    #             if ai_answer:
+    #                 # Парсим список ответов
+    #                 numbers = [int(x) for x in ai_answer.replace(';', ',').split(',') if x.strip().isdigit()]
+    #                 for i, (select, _) in enumerate(dropdowns_data):
+    #                     if i < len(numbers):
+    #                         idx = numbers[i] - 1
+    #                         dropdown = Select(select)
+    #                         if 0 <= idx < len(dropdown.options):
+    #                             dropdown.select_by_index(idx)
+    #                             print(f"✅ Dropdown {i+1}: выбран вариант №{numbers[i]}")
+    #                         else:
+    #                             print(f"⚠️ Dropdown {i+1}: индекс вне диапазона ({numbers[i]})")
+    #                     else:
+    #                         print(f"⚠️ Недостаточно ответов для dropdown {i+1}")
+    #         return True
+    #     else:
+    #         return False
+    # except Exception as e:
+    #     return False
+    #     print(f"⚠️ Ошибка при обработке dropdown: {e}")
+
+
+
+
+
 # ==================== РЕШЕНИЕ ТЕСТА ====================
 def solve_quiz(driver, quiz_url, quiz_name):
     """Автоматическое решение теста"""
@@ -335,18 +531,25 @@ def solve_quiz(driver, quiz_url, quiz_name):
                 except Exception as e:
                     print(f"⚠️ Ошибка при обработке изображений: {e}")
                 
-                # Поиск вариантов ответа
+                # Поиск вариантов ответа (radio / checkbox / dropdown)
                 answer_options = []
                 try:
-                    # Для radio buttons / checkboxes
+                    # Для radio / checkbox
                     options = question.find_elements(By.CSS_SELECTOR, ".answer label, .r0, .r1")
                     for i, opt in enumerate(options, 1):
                         answer_options.append(f"{i}. {opt.text.strip()}")
-                    
-                    # if answer_options:
-                    #     question_text += "\n\nВарианты ответа:\n" + "\n".join(answer_options)
-                except:
-                    pass
+
+                    # Для dropdown (<select>)
+                    selects = question.find_elements(By.TAG_NAME, "select")
+                    for select in selects:
+                        dropdown_options = select.find_elements(By.TAG_NAME, "option")
+                        for i, opt in enumerate(dropdown_options, 1):
+                            text = opt.text.strip()
+                            if text and "Выберите" not in text and "Select" not in text:
+                                answer_options.append(f"{i}. {text}")
+
+                except Exception as e:
+                    print(f"⚠️ Ошибка при сборе вариантов: {e}")
                 
                 #? Улучшенный промпт для геммы, так она делает меньше затупов
                 prompt = f"""
@@ -354,53 +557,65 @@ def solve_quiz(driver, quiz_url, quiz_name):
                 {question_text}
                 OPTIONS:
                 {chr(10).join(answer_options) if answer_options else "No answer options in this question, you need to come up with an answer yourself and give it in a text format."}
-                ANSWER:
                 """
-                if DEBUG:
-                    print(prompt)
+                
                 # Отправка запроса в LM Studio
-                ai_answer = query_lm_studio(prompt, images_base64 if images_base64 else None)
-                
-                if not ai_answer:
-                    print("⚠️ Не удалось получить ответ от AI, пропускаем вопрос")
-                    continue
-                
-                # Попытка вставить ответ
-                answer_inserted = False
-                
-                # Попытка 1: Текстовое поле
-                try:
-                    text_input = question.find_element(By.CSS_SELECTOR, "input[type='text'], textarea")
-                    text_input.clear()
-                    text_input.send_keys(ai_answer)
-                    print(f"✅ Ответ вставлен в текстовое поле: {ai_answer}")
-                    answer_inserted = True
-                except NoSuchElementException:
-                    pass
-                
-                # Попытка 2: Radio button / Checkbox
-                if not answer_inserted:
+
+                if len(selects) != 0:
+                    handle_selects_one_call(driver,question, question_text)
+                else:
+                    if DEBUG:
+                        print(prompt)
+                    ai_answer = query_lm_studio(prompt, images_base64 if images_base64 else None)
+                    
+                    if not ai_answer:
+                        print("⚠️ Не удалось получить ответ от AI, пропускаем вопрос")
+                        continue
+                    
+                    # Попытка вставить ответ
+                    answer_inserted = False
+                    
+                    # Попытка 1: Текстовое поле
                     try:
-                        # Извлекаем номер из ответа AI
-                        answer_number = None
-                        for char in ai_answer:
-                            if char.isdigit():
-                                answer_number = int(char)
-                                break
-                        
-                        if answer_number:
-                            # Находим все radio/checkbox
-                            inputs = question.find_elements(By.CSS_SELECTOR, "input[type='radio'], input[type='checkbox']")
-                            if answer_number <= len(inputs):
-                                target_input = inputs[answer_number - 1]
-                                driver.execute_script("arguments[0].click();", target_input)
-                                print(f"✅ Выбран вариант №{answer_number}")
-                                answer_inserted = True
-                    except Exception as e:
-                        print(f"⚠️ Ошибка при выборе варианта: {e}")
-                
-                if not answer_inserted:
-                    print("⚠️ Не удалось вставить ответ автоматически")
+                        if DEBUG:
+                            print("Выполняю проверку на текст")
+                        text_input = question.find_element(By.CSS_SELECTOR, "input[type='text'], textarea")
+                        text_input.clear()
+                        text_input.send_keys(ai_answer)
+                        print(f"✅ Ответ вставлен в текстовое поле: {ai_answer}")
+                        answer_inserted = True
+                    except NoSuchElementException:
+                        if DEBUG:
+                            print("некуда печатать, пропускаю")
+                        pass
+                    
+                    # Попытка 2: Radio button / Checkbox
+                    if not answer_inserted:
+                        if DEBUG:
+                            print("выполняю проверку на чекбоксы/радио")
+                        try:
+                            # Извлекаем номер из ответа AI
+                            answer_number = None
+                            for char in ai_answer:
+                                if char.isdigit():
+                                    answer_number = int(char)
+                                    break
+                            
+                            if answer_number:
+                                # Находим все radio/checkbox
+                                inputs = question.find_elements(By.CSS_SELECTOR, "input[type='radio'], input[type='checkbox']")
+                                if answer_number <= len(inputs):
+                                    target_input = inputs[answer_number - 1]
+                                    driver.execute_script("arguments[0].click();", target_input)
+                                    print(f"✅ Выбран вариант №{answer_number}")
+                                    answer_inserted = True
+                            else:
+                                print("нет чекбоксов, скипаем")
+                        except Exception as e:
+                            print(f"⚠️ Ошибка при выборе варианта: {e}")
+                            
+                    if not answer_inserted:
+                        print("⚠️ Не удалось вставить ответ автоматически")
                 
                 time.sleep(1)
                 
