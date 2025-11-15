@@ -359,7 +359,7 @@ def handle_selects_one_call(driver, question, question_text, images=None):
         for i, dr in enumerate(dropdown_refs):
             sel_el = dr["select"]
             sel_obj = Select(sel_el)
-            chosen = nums[i] - 1
+            chosen = nums[i+1] - 1
             if 0 <= chosen < len(sel_obj.options):
                 sel_obj.select_by_index(chosen)
                 # помечаем, чтобы не обрабатывать второй раз
